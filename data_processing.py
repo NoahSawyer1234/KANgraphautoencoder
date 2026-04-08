@@ -647,7 +647,7 @@ test_ratio = 0.1
 target_map = {'tox21':12,'muv':17,'sider':27,'clintox':2,'bace':1,'bbbp':1,'hiv':1}
 data_vec = ['bace','bbbp','hiv','clintox','sider','muv','tox21']
 
-print('Now create dataset for - BBBP')
+print('Now create dataset for - bace')
 creat_data('bace', batch_size, train_ratio, vali_ratio, test_ratio)
 '''
 for dataset in data_vec:

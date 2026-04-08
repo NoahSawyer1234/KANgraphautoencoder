@@ -162,7 +162,7 @@ if __name__ == '__main__':
             processed_graphs.append(eigenvalues)
         return processed_graphs
 
-    state = torch.load(datafile+'128_811.pth')
+    state = torch.load(datafile+'.pth')
 
     train_eigval_vec = pre_process_lap_eigenvectors(state['train_graph_list'])
     valid_eigval_vec  = pre_process_lap_eigenvectors(state['valid_graph_list'])
@@ -195,12 +195,11 @@ if __name__ == '__main__':
     print("length of validation set:",len(loaded_valid_dataset))
     print("length of testing set:",len(loaded_test_dataset))
 
-    iters = 10
+    iters = 1
     lr = 10**-4
-    epochs = 500
+    epochs = 300
     num_harmonics = 1
-    num_layers = 4
-    pooling = "avg"
+    num_layers = 5
     if torch.cuda.is_available():
         device = torch.device('cuda')
         print('The code uses GPU...')
@@ -209,8 +208,6 @@ if __name__ == '__main__':
         print('The code uses CPU!!!')
 
     All_AUC = []
-
-    start_time = time.time()
 
     for i in range(iters):
         set_seed(i)
@@ -242,12 +239,15 @@ if __name__ == '__main__':
         #torch.save(model.state_dict(), 'model.pth')
         if i == iters -1: 
             plt.plot(AUC_list)
+            plt.title('AUC vs Epoch')
             plt.savefig('AUCplot_topo.png')
             plt.show()
             plt.plot(loss_list)
+            plt.title('Training Loss vs Epoch')
             plt.savefig('Lossplot_topo.png')
             plt.show()
             plt.plot(vali_loss_list)
+            plt.title('Validation Loss vs Epoch')
             plt.savefig('ValidLossplot_topo.png')
             plt.show()
         All_AUC.append(max(AUC_list))
