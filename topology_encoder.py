@@ -42,7 +42,7 @@ class KAN_linear(nn.Module):
             return y.view(*orig_shape[:-1], self.outdim)
     
 class KA_autoencoder(nn.Module):
-    def __init__(self, in_feat, hidden_feat, latent_feat, out_feat, num_harmonics, e_num_layers, use_bias=False):
+    def __init__(self, in_feat, hidden_feat, latent_feat, num_harmonics, e_num_layers, use_bias=False):
         super(KA_autoencoder, self).__init__()
         encoder_modules = []
         encoder_modules.append(KAN_linear(in_feat, hidden_feat, num_harmonics, addbias=use_bias))
@@ -54,66 +54,79 @@ class KA_autoencoder(nn.Module):
         self.decoder = nn.Sequential(
             KAN_linear(latent_feat, in_feat, num_harmonics, addbias=use_bias)
         )
-        self.predictor = nn.Sequential( 
-            KAN_linear(latent_feat,hidden_feat,num_harmonics),
-            KAN_linear(hidden_feat, out_feat, num_harmonics),
-            nn.Sigmoid()
-        )
 
     def forward(self, features):
         z = self.encoder(features)
         out = self.decoder(z)
-        pred = self.predictor(z)
-        return out, pred
-    
+        return out 
+
     def get_grad_norm_weights(self) -> nn.Module:
         return self.parameters()
+    
+class KA_latentpred(nn.Module):
+    def __init__(self, latent_feat, hidden_feat, out_feat, num_harmonics):
+        super(KA_latentpred, self).__init__()
+        self.predictor = nn.Sequential( 
+            KAN_linear(latent_feat,hidden_feat,num_harmonics),
+            KAN_linear(hidden_feat, hidden_feat, num_harmonics),
+            KAN_linear(hidden_feat, out_feat, num_harmonics),
+            nn.Sigmoid()
+        )
+    def forward(self, latent):
+        return self.predictor(latent)
+    
+class LatentPass(nn.Module):
+    def __init__(self, encoder, predictor):
+        super().__init__()
+        self.encoder = encoder
+        self.predictor = predictor
+        for param in self.encoder.parameters():
+            param.requires_grad = False
+    def forward(self, x):
+        z = self.encoder(x)
+        return self.predictor(z)
     
 class CustomDataset(Dataset):
     def __init__(self, label_list, graph_list):
         self.labels = label_list
         self.graphs = graph_list
         self.device = torch.device('cpu') 
-
     def __len__(self):
         return len(self.labels)
-
     def __getitem__(self, index):
         label = self.labels[index].to(self.device)
-        
-
-        graph = self.graphs[index].to(self.device)
-        
+        graph = self.graphs[index].to(self.device)   
         return label, graph
 
 
-def train(model, device, train_loader, valid_loader, optimizer,recon_loss_fn,pred_loss_fn):
+def train(model, device, train_loader, valid_loader, optimizer,loss_fn,encoding=True):
     model.train()
     total_train_loss = 0.0
     for labels, g in train_loader:
-        y = labels.to(device)
+        y = labels.to(device).float()
         optimizer.zero_grad()     
         input_e = g.to(device)          
-        out_e, latent_pred = model(input_e)                      
-        recon_loss = recon_loss_fn(out_e, input_e)      
-        pred_loss = pred_loss_fn(latent_pred.float(),y.float()) 
-        loss = recon_loss + pred_loss
+        out= model(input_e)     
+        if encoding:                 
+            loss = loss_fn(out, input_e)      
+        else:
+            loss = loss_fn(out, y)   
         loss.backward()
         optimizer.step()
         total_train_loss += loss.item()               
-
     model.eval()
     total_loss_val = 0.0
     with torch.no_grad():
         for labels, g in valid_loader:
+            y = labels.to(device).float()
             input_e = g.to(device)          
-            out_e, latent_pred = model(input_e)                      
-            recon_loss = recon_loss_fn(out_e, input_e)      
-            pred_loss = pred_loss_fn(latent_pred.float(),y.float()) 
-            loss = recon_loss + pred_loss
+            out= model(input_e)                      
+            if encoding:                 
+                loss = loss_fn(out, input_e)      
+            else:
+                loss = loss_fn(out, y)       
             total_loss_val += loss.item()
     return total_train_loss, total_loss_val
-
 
 def predicting(model, device, data_loader):
     model.eval()
@@ -123,8 +136,8 @@ def predicting(model, device, data_loader):
         for labels, g in data_loader:
             y = labels.to(device)
             input_e = g.to(device)    
-            out_e, pred = model(input_e)    
-            all_preds.append(pred.view(-1))
+            out = model(input_e)    
+            all_preds.append(out.view(-1))
             all_labels.append(y.view(-1))
     total_preds = torch.cat(all_preds, 0).cpu()
     total_labels = torch.cat(all_labels, 0).cpu()
@@ -133,20 +146,15 @@ def predicting(model, device, data_loader):
 
 def collate_fn(batch):
     labels, eigvals = zip(*batch) 
-
     labels = torch.stack(labels)
-
     batched_graph = torch.stack(eigvals)
-
     return labels, batched_graph
 
 
 if __name__ == '__main__':
     datafile = 'bace'
-
     recon_loss_fn = nn.L1Loss()
     pred_loss_fn = nn.BCELoss()
-
     batch_size = 128
     train_ratio = 0.8
     vali_ratio = 0.1
@@ -195,9 +203,10 @@ if __name__ == '__main__':
     print("length of validation set:",len(loaded_valid_dataset))
     print("length of testing set:",len(loaded_test_dataset))
 
-    iters = 1
+    iters = 20
     lr = 10**-4
-    epochs = 300
+    epochs = 500
+    encoding_epochs = epochs
     num_harmonics = 1
     num_layers = 5
     if torch.cuda.is_available():
@@ -212,30 +221,45 @@ if __name__ == '__main__':
     for i in range(iters):
         set_seed(i)
         print('Iteration - ', i+1)
-        AUC_list = []
-        loss_list = []
-        vali_loss_list = []
-
-        model = KA_autoencoder(in_feat=10, hidden_feat=64, latent_feat=128, out_feat=1, 
-                        num_harmonics=num_harmonics, e_num_layers=num_layers, use_bias=False)
-        total_params = sum(p.numel() for p in model.parameters())
+        ae_model = KA_autoencoder(in_feat=10, hidden_feat=64, latent_feat=128, 
+                num_harmonics=num_harmonics, e_num_layers=num_layers, use_bias=False)
+        latent_model = KA_latentpred(latent_feat=128,hidden_feat=64,out_feat=1,num_harmonics=num_harmonics)
+        pred_model = LatentPass(ae_model.encoder,latent_model)
+        total_params = sum(p.numel() for p in ae_model.parameters()) + sum(p.numel() for p in latent_model.parameters()) 
         print(f"Total parameters: {total_params}")
 
-        model = model.to(device)
-        optimiser = torch.optim.Adam(model.parameters(), lr=lr)
-        #scheduler = StepLR(optimiser, step_size=100, gamma=0.1)
+        ae_model = ae_model.to(device)
+        latent_model = latent_model.to(device)
+        pred_model = pred_model.to(device)
+        ae_optimiser = torch.optim.Adam(ae_model.parameters(), lr=lr)
+        pred_optimiser = torch.optim.Adam(latent_model.parameters(), lr=lr)
+
+        #TRAINING AUTOENCODER 
+        for epoch in range(encoding_epochs):
+            train_loss,vali_loss = train(ae_model, device, loaded_train_loader, loaded_valid_loader, ae_optimiser,
+                                         loss_fn=recon_loss_fn,encoding=True)
+            if epoch % 10 == 0 :
+                print('AE training Epoch - ', epoch)
+                print('Train loss - ', train_loss)
+                print('Valid loss - ', vali_loss)
+        
+        #TRAINING LATENT PREDICTOR
+        loss_list =[]
+        vali_loss_list=[]
+        AUC_list=[]
         for epoch in range(epochs):
-            train_loss,vali_loss = train(model, device, loaded_train_loader, loaded_valid_loader, optimiser,
-                                         recon_loss_fn=recon_loss_fn, pred_loss_fn=pred_loss_fn)
-            AUC = predicting(model, device, loaded_test_loader)
+            train_loss,vali_loss = train(pred_model, device, loaded_train_loader, loaded_valid_loader, pred_optimiser,
+                                         loss_fn=pred_loss_fn,encoding=False)
+            AUC = predicting(pred_model,device,loaded_valid_loader)
             loss_list.append(train_loss)
             vali_loss_list.append(vali_loss)
             AUC_list.append(AUC)
             if epoch % 10 == 0 :
-                print('Epoch - ', epoch)
+                print('Prediction training Epoch - ', epoch)
                 print('Train loss - ', train_loss)
                 print('Valid loss - ', vali_loss)
                 print('AUC - ', AUC)
+        
         #torch.save(model.state_dict(), 'model.pth')
         if i == iters -1: 
             plt.plot(AUC_list)
