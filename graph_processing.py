@@ -293,7 +293,7 @@ def is_file_in_directory(directory, target_file):
 def creat_data(datafile,batch_size,train_ratio,vali_ratio,test_ratio):
     datasets = datafile
     directory_path = ''
-    target_file_name = datafile +'.pth'
+    target_file_name = datafile +f'_{batch_size}.pth'
     if is_file_in_directory(directory_path, target_file_name):
         return True
     else:
@@ -356,6 +356,7 @@ def set_seed(seed):
 
 #################################### DATA PROCESSING 
 def graph_processing(data,batch,train,test,valid):
+    print('Graph processing...')
     if torch.cuda.is_available():
         device = torch.device('cuda')
         #print('The code uses GPU...')

@@ -5,7 +5,6 @@
 import torch
 import torch.nn as nn
 import numpy as np
-import statistics
 from torch_geometric.loader import DataLoader
 from sklearn.metrics import roc_auc_score
 import time
@@ -34,11 +33,11 @@ class KAN_node_embedding(nn.Module):
     def forward(self, x):
         x_expanded = x.unsqueeze(1).unsqueeze(-1)
         x_scaled = x_expanded * self.k
-        cos_terms = torch.cos(x_scaled)  # [batch, 1, in_dim, num_harmonics]
-        sin_terms = torch.sin(x_scaled)  # [batch, 1, in_dim, num_harmonics]
+        cos_terms = torch.cos(x_scaled)  
+        sin_terms = torch.sin(x_scaled)  
         y_cos = torch.einsum('bnih,oih->bo', cos_terms, self.fouriercoeffs[0])
         y_sin = torch.einsum('bnih,oih->bo', sin_terms, self.fouriercoeffs[1])
-        y = y_cos + y_sin  # [batch, out_dim]
+        y = y_cos + y_sin  
         if self.addbias:
             y = y + self.bias
         return y
@@ -162,7 +161,7 @@ def predicting(model, device, data_loader):
     all_preds = []
     all_labels = []
     with torch.no_grad():
-        for graphs, eigvals, labels in valid_loader:
+        for graphs, eigvals, labels in data_loader:
             graphs = graphs.to(device)
             eigvals = eigvals.to(device)
             y = labels.to(device).float()
@@ -226,16 +225,24 @@ def pre_process_graphs(graph_list):
         processed_graphs.append(g)
     return processed_graphs
 
-if __name__ == '__main__':
-    datafile = 'bace'
+def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,enc_epochs,num_harmonics, 
+                   num_message_layers, num_pred_layers, hidden_width,latent_size):
+    print('GAE_KAN running...')
+    datafile = datafile
+    recon_loss_fn = nn.L1Loss()
+    pred_loss_fn = nn.BCELoss()
+    batch_size = batch_size
+    iters = iterations
+    lr = learning_rate
+    epochs = pred_epochs
+    encoding_epochs = enc_epochs
+    num_harmonics = num_harmonics
+    num_enc_layers = num_message_layers
+    num_pred_layers = num_pred_layers
 
-    batch_size = 128
-    train_ratio = 0.8
-    vali_ratio = 0.1
-    test_ratio = 0.1
     target_map = {'tox21':12,'muv':17,'sider':27,'clintox':2,'bace':1,'bbbp':1,'hiv':1}
-    data_vec = ['bace','bbbp','hiv','clintox','sider','muv','tox21']
-    target_dim = target_map[datafile]
+    file_name = datafile.split("_")[0]
+    target_dim = target_map[file_name]
 
     state = torch.load(datafile+'.pth')
 
@@ -252,11 +259,11 @@ if __name__ == '__main__':
     # Need to unzip for batches
     train_gs, train_evs, train_node_feat = zip(*train_graph_targets)
     valid_gs, valid_evs, valid_node_feat = zip(*valid_graph_targets)
-    test_gs, test_evs, test_node_feat = zip(*test_graph_targets)
+    #test_gs, test_evs, test_node_feat = zip(*test_graph_targets)
     
     train_labels = [g.y for g in state['train']]
     valid_labels = [g.y for g in state['valid']]
-    test_labels  = [g.y for g in state['test']]
+    #test_labels  = [g.y for g in state['test']]
 
     train_loader = DataLoader(
         GraphFeatureDataset(train_gs, train_evs, train_node_feat, train_labels), 
@@ -272,12 +279,13 @@ if __name__ == '__main__':
         drop_last=True
     )
 
-    test_loader = DataLoader(
+    '''    test_loader = DataLoader(
         GraphFeatureDataset(test_gs, test_evs, test_node_feat, test_labels), 
         batch_size=int(state['batch_size']), 
         shuffle=False,  # Keep test order consistent
         drop_last=True
-    )
+    )'''
+
     def set_seed(seed):
         torch.manual_seed(seed)
         torch.cuda.manual_seed(seed)
@@ -285,45 +293,33 @@ if __name__ == '__main__':
         torch.backends.cudnn.benchmark = False
         np.random.seed(seed)
 
-    print('dataset was loaded!')
+    #print('dataset was loaded!')
     node_dim = train_graphs[0].x.shape[1]
-    print(f"node feature dim after pre-processing: {node_dim}")
-
-    recon_loss_fn = nn.L1Loss()
-    pred_loss_fn = nn.BCELoss()
-
-    iters = 1
-    lr = 1e-4
-    epochs = 1000
-    encoding_epochs = int(epochs)
-    num_harmonics = 1
-    num_enc_layers = 3
-    num_pred_layers = 2
-    All_AUC = []
+    #print(f"node feature dim after pre-processing: {node_dim}")
 
     if torch.cuda.is_available():
         device = torch.device('cuda')
-        print('The code uses GPU!!!')
+        #print('The code uses GPU!!!')
     else:
         device = torch.device('cpu')
-        print('The code uses CPU!!!')
+        #print('The code uses CPU!!!')
 
     All_AUC = []
     for i in range(iters):
+        print(i)
         set_seed(i)
-        print('Iteration -', i + 1)
-
-        ae_model = KA_GAE(in_feat=23+10, hidden_feat=64, latent_feat=128, out_feat=10 + 23 + 10,
+        #print('Iteration -', i + 1)
+        ae_model = KA_GAE(in_feat=23+10, hidden_feat=hidden_width, latent_feat=latent_size, out_feat=10 + 23 + 10,
                                   num_harmonics=num_harmonics, e_num_layers=num_enc_layers,
                                   use_bias=True).to(device)
-        latent_model = KA_latentpred(latent_feat=128, hidden_feat=64, out_feat=1,
+        latent_model = KA_latentpred(latent_feat=latent_size, hidden_feat=hidden_width, out_feat=target_dim,
                                      num_harmonics=num_harmonics,p_num_layers=num_pred_layers, use_bias=True).to(device)
         
         pred_model = LatentPass(ae_model.encoder, latent_model).to(device)
 
-        total_params = (sum(p.numel() for p in ae_model.parameters()) +
-                        sum(p.numel() for p in latent_model.parameters()))
-        print(f"Total parameters: {total_params}")
+        #total_params = (sum(p.numel() for p in ae_model.parameters()) +
+                        #sum(p.numel() for p in latent_model.parameters()))
+        #print(f"Total parameters: {total_params}")
 
         ae_optimiser   = torch.optim.Adam(ae_model.parameters(), lr=lr)
         pred_optimiser = torch.optim.Adam(latent_model.parameters(), lr=lr)
@@ -331,32 +327,19 @@ if __name__ == '__main__':
         for epoch in range(encoding_epochs):
             train_loss, vali_loss = train(ae_model, device, train_loader, valid_loader,
                                           ae_optimiser, recon_loss_fn, encoding=True)
-            if epoch % 10 == 0:
-                print(f'AE Epoch {epoch} — train: {train_loss:.4f}  valid: {vali_loss:.4f}')
-
-        loss_list = []
-        vali_loss_list = []
         AUC_list = []
         for epoch in range(epochs):
             train_loss, vali_loss = train(pred_model, device, train_loader, valid_loader,
                                           pred_optimiser, pred_loss_fn, encoding=False)
             AUC = predicting(pred_model, device, valid_loader)
-            loss_list.append(train_loss)
-            vali_loss_list.append(vali_loss)
             AUC_list.append(AUC)
-            if epoch % 10 == 0:
-                print(f'Pred Epoch {epoch} — train: {train_loss:.4f}  valid: {vali_loss:.4f}  AUC: {AUC:.4f}')
+        All_AUC.append(max(AUC_list))
+    return All_AUC
 
-        if i == iters - 1:
+
+'''        if i == iters - 1:
             for data, name in [(AUC_list, 'AUC'), (loss_list, 'Loss'), (vali_loss_list, 'ValidLoss')]:
                 plt.plot(data)
                 plt.title(f'{name} vs Epoch')
                 plt.savefig(f'{name}plot_GAE_KAN.png')
-                plt.show()
-        All_AUC.append(max(AUC_list))
-        print('Iteration done!')
-
-    print(All_AUC)
-    print("mean:", statistics.mean(All_AUC))
-    if iters > 1:
-        print("std:", statistics.stdev(All_AUC))
+                plt.show()'''

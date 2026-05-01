@@ -132,6 +132,7 @@ def pre_process_graphs(graph_list):
 
 def GCN_MLP_Script(batch_size, datafile, iterations, learning_rate, num_epochs, 
                    num_message_layers, hidden_width):
+    print('GCN_MLP running...')
     datafile = datafile
     loss_fn = nn.BCELoss(reduction='mean')
 
@@ -142,7 +143,8 @@ def GCN_MLP_Script(batch_size, datafile, iterations, learning_rate, num_epochs,
     num_message_layers = num_message_layers
 
     target_map = {'tox21':12,'muv':17,'sider':27,'clintox':2,'bace':1,'bbbp':1,'hiv':1}
-    target_dim = target_map[datafile]
+    file_name = datafile.split("_")[0]
+    target_dim = target_map[file_name]
 
     state = torch.load(datafile+'.pth')
 

@@ -12,6 +12,7 @@ from torch_geometric.nn import MessagePassing
 from torch_geometric.utils import add_self_loops, degree
 from torch_geometric.utils import scatter
 import json
+
 class KAN_node_embedding(nn.Module):
     def __init__(self, input_size, output_size, num_harmonics, addbias=True):
         super(KAN_node_embedding,self).__init__()
@@ -166,7 +167,8 @@ def GCN_KAN_Script(batch_size, datafile, iterations, learning_rate, num_epochs,n
     num_message_layers = num_message_layers
 
     target_map = {'tox21':12,'muv':17,'sider':27,'clintox':2,'bace':1,'bbbp':1,'hiv':1}
-    target_dim = target_map[datafile]
+    file_name = datafile.split("_")[0]
+    target_dim = target_map[file_name]
 
     state = torch.load(datafile+'.pth')
 
