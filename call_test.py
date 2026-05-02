@@ -13,6 +13,7 @@ from torch_geometric.utils import get_laplacian, to_dense_adj
 from torch.utils.data import Dataset
 
 import GAE_KAN
+import GAE_MLP
 import GCN_KAN
 import GCN_MLP
 import graph_processing
@@ -24,17 +25,22 @@ if __name__ == '__main__':
     harmonics = 1
     learn_rate = 0.0001
     epochs = 500
-    hidden_width = 64
+    hidden_width = 16
     latent_size = 128
     message_layers = 2
-    pred_layers = 2
-    iterations = 5
-    model = 'GAE_KAN'
+    readout_layers = 1
+    decoder_layers = 1
+    pred_layers = 1
+    iterations = 1
+    model = 'GAE_MLP'
     dataset = 'bace'
     print('Run starting...')
+
     graph_processing.graph_processing(dataset,batches,0.8,0,0.2)
-    res = GAE_KAN.GAE_KAN_Script(batches,dataset + f'_{batches}',iterations,learn_rate,epochs,epochs,harmonics,
-                                 message_layers,pred_layers,hidden_width,latent_size)
+    res = GAE_MLP.GAE_MLP_Script(batches,dataset + f'_{batches}',iterations,learn_rate,epochs,epochs,
+                                 message_layers,readout_layers,pred_layers,decoder_layers,hidden_width,latent_size)
+    '''    res = GAE_KAN.GAE_KAN_Script(batches,dataset + f'_{batches}',iterations,learn_rate,epochs,epochs,harmonics,
+                                 message_layers,readout_layers,pred_layers,decoder_layers,hidden_width,latent_size)'''
     print(res)
     print(np.mean(res))
 

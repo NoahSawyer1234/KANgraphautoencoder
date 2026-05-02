@@ -67,7 +67,8 @@ class KAN_message_passing(MessagePassing):
         return norm.view(-1, 1) * x_j
 
 class KA_GCN_latent(nn.Module):
-    def __init__(self, input_size, hidden_size, latent_size, num_harmonics, num_message_layers, use_bias=False):
+    def __init__(self, input_size, hidden_size, latent_size, num_harmonics, 
+                 num_message_layers, num_readout_layers, use_bias=False):
         super(KA_GCN_latent, self).__init__()
         self.num_message_layers = num_message_layers
         #self.batch_norms = nn.ModuleList()
@@ -80,7 +81,15 @@ class KA_GCN_latent(nn.Module):
             #self.batch_norms.append(nn.BatchNorm1d(hidden_feat))
         
         self.meanpool = global_mean_pool
-        self.latent_readout = KAN_node_embedding(hidden_size, latent_size, num_harmonics, addbias=use_bias)
+        self.latent_readout = nn.ModuleList()
+        if num_readout_layers ==1:
+            self.latent_readout.append(KAN_node_embedding(hidden_size,latent_size,num_harmonics,addbias=use_bias))
+        else:
+            for _ in range(num_readout_layers-1):
+                self.latent_readout.append(KAN_node_embedding(hidden_size, hidden_size, num_harmonics, addbias=use_bias))
+                #self.batch_norms.append(nn.BatchNorm1d(hidden_feat))
+            self.latent_readout.append(KAN_node_embedding(hidden_size, latent_size ,num_harmonics,addbias=use_bias))
+        self.latent_readout = nn.Sequential(*self.latent_readout)
 
     def forward(self, g, features):
         h = self.node_embedding(features)
@@ -94,10 +103,22 @@ class KA_GCN_latent(nn.Module):
         return out
 
 class KA_GAE(nn.Module):
-    def __init__(self, in_feat, hidden_feat, latent_feat, out_feat, num_harmonics, e_num_layers, use_bias=False):
+    def __init__(self, in_feat, hidden_feat, latent_feat, out_feat, num_harmonics, e_num_layers, 
+                 r_num_layers, d_num_layers, use_bias=False):
         super(KA_GAE, self).__init__() 
-        self.encoder = KA_GCN_latent(in_feat,hidden_feat,latent_feat, num_harmonics, e_num_layers, use_bias=use_bias)
-        self.decoder = KAN_node_embedding(latent_feat, out_feat, num_harmonics, addbias=use_bias)
+        self.encoder = KA_GCN_latent(in_feat,hidden_feat,latent_feat, num_harmonics, e_num_layers,
+                                      r_num_layers, use_bias=use_bias)
+        self.decoder = nn.ModuleList()
+        if d_num_layers ==1:
+            self.decoder.append(KAN_node_embedding(latent_feat,out_feat,num_harmonics,addbias=use_bias))
+        else:
+            self.decoder.append(KAN_node_embedding(latent_feat,hidden_feat,num_harmonics,addbias=use_bias))
+            for _ in range(d_num_layers-2):
+                self.decoder.append(KAN_node_embedding(hidden_feat, hidden_feat, num_harmonics, addbias=use_bias))
+                #self.batch_norms.append(nn.BatchNorm1d(hidden_feat))
+            self.decoder.append(KAN_node_embedding(hidden_feat, out_feat,num_harmonics,addbias=use_bias))
+        self.decoder =  nn.Sequential(*self.decoder)
+            
     def forward(self, g, features):
         z = self.encoder(g, features)
         out = self.decoder(z)
@@ -106,14 +127,17 @@ class KA_GAE(nn.Module):
 class KA_latentpred(nn.Module):
     def __init__(self, latent_feat, hidden_feat, out_feat, num_harmonics, p_num_layers, use_bias= True):
         super(KA_latentpred, self).__init__()
-        # Need to update this if I want variable latent predictor
-        # Need to figure out bias too
-        pred_modules = [KAN_node_embedding(latent_feat, hidden_feat, num_harmonics, use_bias)]
-        for _ in range(p_num_layers - 2):
-            pred_modules.append(KAN_node_embedding(hidden_feat, hidden_feat, num_harmonics, addbias=use_bias))
-        pred_modules.append(KAN_node_embedding(hidden_feat, out_feat, num_harmonics,use_bias))
-        pred_modules.append(nn.Sigmoid())
-        self.predictor = nn.Sequential(*pred_modules)
+        self.pred_modules= nn.ModuleList()
+        if p_num_layers ==1:
+            self.pred_modules.append(KAN_node_embedding(latent_feat,out_feat,num_harmonics,addbias=use_bias))
+        else:
+            self.pred_modules.append(KAN_node_embedding(latent_feat,hidden_feat,num_harmonics,addbias=use_bias))
+            for _ in range(p_num_layers-2):
+                self.pred_modules.append(KAN_node_embedding(hidden_feat, hidden_feat, num_harmonics, addbias=use_bias))
+                #self.batch_norms.append(nn.BatchNorm1d(hidden_feat))
+            self.pred_modules.append(KAN_node_embedding(hidden_feat, out_feat,num_harmonics,addbias=use_bias))
+        self.pred_modules.append(nn.Sigmoid())
+        self.predictor = nn.Sequential(*self.pred_modules)
     def forward(self, latent):
         return self.predictor(latent)
 
@@ -226,7 +250,7 @@ def pre_process_graphs(graph_list):
     return processed_graphs
 
 def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,enc_epochs,num_harmonics, 
-                   num_message_layers, num_pred_layers, hidden_width,latent_size):
+                   num_message_layers, num_readout_layers, num_pred_layers, num_dec_layers, hidden_width,latent_size):
     print('GAE_KAN running...')
     datafile = datafile
     recon_loss_fn = nn.L1Loss()
@@ -238,7 +262,9 @@ def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
     encoding_epochs = enc_epochs
     num_harmonics = num_harmonics
     num_enc_layers = num_message_layers
+    num_readout_layers = num_readout_layers
     num_pred_layers = num_pred_layers
+    num_dec_layers = num_dec_layers
 
     target_map = {'tox21':12,'muv':17,'sider':27,'clintox':2,'bace':1,'bbbp':1,'hiv':1}
     file_name = datafile.split("_")[0]
@@ -311,7 +337,8 @@ def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
         #print('Iteration -', i + 1)
         ae_model = KA_GAE(in_feat=23+10, hidden_feat=hidden_width, latent_feat=latent_size, out_feat=10 + 23 + 10,
                                   num_harmonics=num_harmonics, e_num_layers=num_enc_layers,
-                                  use_bias=True).to(device)
+                                  r_num_layers= num_readout_layers,
+                                  d_num_layers= num_dec_layers, use_bias=True).to(device)
         latent_model = KA_latentpred(latent_feat=latent_size, hidden_feat=hidden_width, out_feat=target_dim,
                                      num_harmonics=num_harmonics,p_num_layers=num_pred_layers, use_bias=True).to(device)
         

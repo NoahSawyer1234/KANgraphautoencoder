@@ -64,7 +64,7 @@ class KAN_message_passing(MessagePassing):
         return norm.view(-1, 1) * x_j
 
 class KA_GCN(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size, num_harmonics, num_message_layers, use_bias=False):
+    def __init__(self, input_size, hidden_size, output_size, num_harmonics, num_message_layers, num_readout_layers, use_bias=False):
         super(KA_GCN, self).__init__()
         self.num_message_layers = num_message_layers
         #self.batch_norms = nn.ModuleList()
@@ -77,11 +77,17 @@ class KA_GCN(nn.Module):
             #self.batch_norms.append(nn.BatchNorm1d(hidden_feat))
         
         self.meanpool = global_mean_pool
-        self.readout_layers =  nn.Sequential(
-            KAN_node_embedding(hidden_size, hidden_size, num_harmonics, addbias=use_bias),
-            KAN_node_embedding(hidden_size, output_size, num_harmonics, addbias=use_bias),
-            nn.Sigmoid()
-            )
+        self.readout_layers = nn.ModuleList()
+        if num_readout_layers ==1:
+            self.readout_layers.append(KAN_node_embedding(hidden_size,output_size,num_harmonics,addbias=use_bias))
+        else:
+            for _ in range(num_readout_layers-1):
+                self.readout_layers.append(KAN_node_embedding(hidden_size, hidden_size, num_harmonics, addbias=use_bias))
+                #self.batch_norms.append(nn.BatchNorm1d(hidden_feat))
+            self.readout_layers.append(KAN_node_embedding(hidden_size, output_size ,num_harmonics,addbias=use_bias))
+        self.readout_layers.append(nn.Sigmoid())
+        self.readout_layers = nn.Sequential(*self.readout_layers)
+
     def forward(self, g, features):
         h = self.node_embedding(features)
         #h = self.dropout(h)
@@ -155,7 +161,7 @@ def pre_process_graphs(graph_list):
     return processed_graphs
 
 def GCN_KAN_Script(batch_size, datafile, iterations, learning_rate, num_epochs,num_harmonics, 
-                   num_message_layers, hidden_width):
+                   num_message_layers, num_readout_layers, hidden_width):
     datafile = datafile
     loss_fn = nn.BCELoss(reduction='mean')
 
@@ -165,6 +171,7 @@ def GCN_KAN_Script(batch_size, datafile, iterations, learning_rate, num_epochs,n
     epochs = num_epochs
     num_harmonics = num_harmonics
     num_message_layers = num_message_layers
+    num_readout_layers =  num_readout_layers
 
     target_map = {'tox21':12,'muv':17,'sider':27,'clintox':2,'bace':1,'bbbp':1,'hiv':1}
     file_name = datafile.split("_")[0]
@@ -203,7 +210,8 @@ def GCN_KAN_Script(batch_size, datafile, iterations, learning_rate, num_epochs,n
         #print('Iteration - ', i+1)
         AUC_list = []
         model = KA_GCN(input_size= 23+10 , hidden_size=hidden_width, output_size=target_dim,
-                        num_harmonics=num_harmonics, num_message_layers=num_message_layers, use_bias=True)
+                        num_harmonics=num_harmonics, num_message_layers=num_message_layers,
+                        num_readout_layers= num_readout_layers, use_bias=True)
         #total_params = sum(p.numel() for p in model.parameters())
         #print(f"Total parameters: {total_params}")
         model = model.to(device)

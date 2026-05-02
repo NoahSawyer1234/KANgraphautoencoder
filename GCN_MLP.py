@@ -36,7 +36,7 @@ class MLP_message_passing(MessagePassing):
         return norm.view(-1, 1) * x_j
 
 class MLP_GCN(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size, num_message_layers, use_bias=False):
+    def __init__(self, input_size, hidden_size, output_size, num_message_layers, num_readout_layers, use_bias=False):
         super(MLP_GCN, self).__init__()
         self.num_message_layers = num_message_layers
         #self.batch_norms = nn.ModuleList()
@@ -50,12 +50,16 @@ class MLP_GCN(nn.Module):
         self.lr = nn.LeakyReLU()
         
         self.meanpool = global_mean_pool
-        self.readout_layers =  nn.Sequential(
-            nn.Linear(hidden_size, hidden_size, bias=use_bias),
-            nn.LeakyReLU(),
-            nn.Linear(hidden_size, output_size, bias=use_bias),
-            nn.Sigmoid()
-            )
+        self.readout_layers = nn.ModuleList()
+        if num_readout_layers ==1:
+            self.readout_layers.append(nn.Linear(hidden_size,output_size,bias=use_bias))
+        else:
+            for _ in range(num_readout_layers-1):
+                self.readout_layers.append(nn.Linear(hidden_size,hidden_size,bias=use_bias))
+                self.readout_layers.append(nn.LeakyReLU())
+            self.readout_layers.append(nn.Linear(hidden_size,output_size,bias=use_bias))
+        self.readout_layers.append(nn.Sigmoid())
+        self.readout_layers = nn.Sequential(*self.readout_layers)
     def forward(self, g, features):
         h = self.node_embedding(features)
         h = self.lr(h)
@@ -131,7 +135,7 @@ def pre_process_graphs(graph_list):
     return processed_graphs
 
 def GCN_MLP_Script(batch_size, datafile, iterations, learning_rate, num_epochs, 
-                   num_message_layers, hidden_width):
+                   num_message_layers, num_readout_layers, hidden_width):
     print('GCN_MLP running...')
     datafile = datafile
     loss_fn = nn.BCELoss(reduction='mean')
@@ -141,6 +145,7 @@ def GCN_MLP_Script(batch_size, datafile, iterations, learning_rate, num_epochs,
     lr = learning_rate
     epochs = num_epochs
     num_message_layers = num_message_layers
+    num_readout_layers = num_readout_layers
 
     target_map = {'tox21':12,'muv':17,'sider':27,'clintox':2,'bace':1,'bbbp':1,'hiv':1}
     file_name = datafile.split("_")[0]
@@ -179,7 +184,7 @@ def GCN_MLP_Script(batch_size, datafile, iterations, learning_rate, num_epochs,
         print('Iteration - ', i+1)
         AUC_list = []
         model = MLP_GCN(input_size= 23+10 , hidden_size=hidden_width, output_size=target_dim
-                        , num_message_layers=num_message_layers, use_bias=True)
+                        , num_message_layers=num_message_layers, num_readout_layers= num_readout_layers, use_bias=True)
         #total_params = sum(p.numel() for p in model.parameters())
         #print(f"Total parameters: {total_params}")
         model = model.to(device)

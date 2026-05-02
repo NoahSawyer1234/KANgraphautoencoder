@@ -16,44 +16,17 @@ from torch_geometric.utils import scatter
 from torch_geometric.utils import get_laplacian, to_dense_adj
 from torch.utils.data import Dataset
 
-class KAN_node_embedding(nn.Module):
-    def __init__(self, input_size, output_size, num_harmonics, addbias=True):
-        super(KAN_node_embedding,self).__init__()
-        self.harmonics = num_harmonics
-        self.addbias = addbias
-        self.in_size = input_size
-        self.out_size = output_size
-        self.fouriercoeffs = nn.Parameter(torch.randn(2, output_size, input_size, num_harmonics) / 
-                                             (np.sqrt(input_size) * np.sqrt(num_harmonics)))
-        k = torch.arange(1, num_harmonics + 1).view(1, 1, 1, num_harmonics)
-        self.register_buffer('k', k)
-        if self.addbias:
-            self.bias = nn.Parameter(torch.zeros(output_size))
-    
-    def forward(self, x):
-        x_expanded = x.unsqueeze(1).unsqueeze(-1)
-        x_scaled = x_expanded * self.k
-        cos_terms = torch.cos(x_scaled)  
-        sin_terms = torch.sin(x_scaled)  
-        y_cos = torch.einsum('bnih,oih->bo', cos_terms, self.fouriercoeffs[0])
-        y_sin = torch.einsum('bnih,oih->bo', sin_terms, self.fouriercoeffs[1])
-        y = y_cos + y_sin  
-        if self.addbias:
-            y = y + self.bias
-        return y
-
-# Adapted from https://pytorch-geometric.readthedocs.io/en/2.6.0/notes/create_gnn.html
-class KAN_message_passing(MessagePassing):
-    def __init__(self, input_size, output_size, num_harmonics, addbias=True):
+class MLP_message_passing(MessagePassing):
+    def __init__(self, input_size, output_size, addbias=True):
         super().__init__(aggr='add')
-        self.KAN = KAN_node_embedding(input_size,output_size,num_harmonics, addbias=False)
+        self.lin = nn.Linear(input_size,output_size, bias=False)
         self.addbias = addbias
         if self.addbias:
             self.bias = nn.Parameter(torch.zeros(output_size))
 
     def forward(self,x,edge_index):
         edge_index, _ = add_self_loops(edge_index, num_nodes=x.size(0))
-        x = self.KAN(x)
+        x = self.lin(x)
         row, col = edge_index
         deg = degree(col, x.size(0), dtype=x.dtype)
         deg_inv_sqrt = deg.pow(-0.5)
@@ -66,54 +39,78 @@ class KAN_message_passing(MessagePassing):
     def message(self, x_j, norm):
         return norm.view(-1, 1) * x_j
 
-class KA_GCN_latent(nn.Module):
-    def __init__(self, input_size, hidden_size, latent_size, num_harmonics, num_message_layers, use_bias=False):
-        super(KA_GCN_latent, self).__init__()
+class MLP_GCN_latent(nn.Module):
+    def __init__(self, input_size, hidden_size, latent_size, num_message_layers, num_readout_layers, use_bias=False):
+        super(MLP_GCN_latent, self).__init__()
         self.num_message_layers = num_message_layers
-        #self.batch_norms = nn.ModuleList()
-        #self.dropout = nn.Dropout(0.2)
-
-        self.node_embedding = KAN_node_embedding(input_size, hidden_size, num_harmonics, addbias=use_bias)
+        self.node_embedding = nn.Linear(input_size, hidden_size, bias=use_bias)
         self.message_layers = nn.ModuleList()
         for _ in range(num_message_layers):
-            self.message_layers.append(KAN_message_passing(hidden_size, hidden_size, num_harmonics, addbias=use_bias))
-            #self.batch_norms.append(nn.BatchNorm1d(hidden_feat))
+            self.message_layers.append(MLP_message_passing(hidden_size, hidden_size, addbias=use_bias))
+        self.lr = nn.LeakyReLU()
         
         self.meanpool = global_mean_pool
-        self.latent_readout = KAN_node_embedding(hidden_size, latent_size, num_harmonics, addbias=use_bias)
 
+        self.latent_readout = nn.ModuleList()
+        if num_readout_layers ==1:
+            self.latent_readout.append(nn.Linear(hidden_size,latent_size,bias=use_bias))
+        else:
+            for _ in range(num_readout_layers-1):
+                self.latent_readout.append(nn.Linear(hidden_size,hidden_size,bias=use_bias))
+                self.latent_readout.append(nn.LeakyReLU())
+            self.latent_readout.append(nn.Linear(hidden_size,latent_size,bias=use_bias))
+        self.latent_readout = nn.Sequential(*self.latent_readout)
+        
     def forward(self, g, features):
         h = self.node_embedding(features)
+        h = self.lr(h)
         #h = self.dropout(h)
         for layer in self.message_layers:
             h = layer(h,g.edge_index)  
+            h = self.lr(h)
             #h = batch_norm(h) 
             #h = self.dropout(h)  
         y = global_mean_pool(h,g.batch)
         out = self.latent_readout(y)     
         return out
+    
+class MLP_GAE(nn.Module):
+    def __init__(self, in_feat, hidden_feat, latent_feat, out_feat, e_num_layers, 
+                 r_num_layers,d_num_layers, use_bias=False):
+        super(MLP_GAE, self).__init__() 
+        self.encoder = MLP_GCN_latent(in_feat,hidden_feat,latent_feat, e_num_layers, r_num_layers, use_bias=use_bias)
 
-class KA_GAE(nn.Module):
-    def __init__(self, in_feat, hidden_feat, latent_feat, out_feat, num_harmonics, e_num_layers, use_bias=False):
-        super(KA_GAE, self).__init__() 
-        self.encoder = KA_GCN_latent(in_feat,hidden_feat,latent_feat, num_harmonics, e_num_layers, use_bias=use_bias)
-        self.decoder = KAN_node_embedding(latent_feat, out_feat, num_harmonics, addbias=use_bias)
+        self.decoder = nn.ModuleList()
+        if d_num_layers ==1:
+            self.decoder.append(nn.Linear(latent_feat,out_feat,bias=use_bias))
+        else:
+            self.decoder.append(nn.Linear(latent_feat,hidden_feat,bias=use_bias))
+            self.decoder.append(nn.LeakyReLU())
+            for _ in range(d_num_layers-2):
+                self.decoder.append(nn.Linear(hidden_feat,hidden_feat,bias=use_bias))
+                self.decoder.append(nn.LeakyReLU())
+            self.decoder.append(nn.Linear(hidden_feat,hidden_feat,bias=use_bias))
+        self.decoder =  nn.Sequential(*self.decoder)
     def forward(self, g, features):
         z = self.encoder(g, features)
         out = self.decoder(z)
         return out
 
-class KA_latentpred(nn.Module):
-    def __init__(self, latent_feat, hidden_feat, out_feat, num_harmonics, p_num_layers, use_bias= True):
-        super(KA_latentpred, self).__init__()
-        # Need to update this if I want variable latent predictor
-        # Need to figure out bias too
-        pred_modules = [KAN_node_embedding(latent_feat, hidden_feat, num_harmonics, use_bias)]
-        for _ in range(p_num_layers - 2):
-            pred_modules.append(KAN_node_embedding(hidden_feat, hidden_feat, num_harmonics, addbias=use_bias))
-        pred_modules.append(KAN_node_embedding(hidden_feat, out_feat, num_harmonics,use_bias))
-        pred_modules.append(nn.Sigmoid())
-        self.predictor = nn.Sequential(*pred_modules)
+class MLP_latentpred(nn.Module):
+    def __init__(self, latent_feat, hidden_feat, out_feat, p_num_layers, use_bias= True):
+        super(MLP_latentpred, self).__init__()
+        self.pred_modules= nn.ModuleList()
+        if p_num_layers ==1:
+            self.pred_modules.append(nn.Linear(latent_feat,out_feat,bias=use_bias))
+        else:
+            self.pred_modules.append(nn.Linear(latent_feat,hidden_feat,bias=use_bias))
+            self.pred_modules.append(nn.LeakyReLU())
+            for _ in range(p_num_layers-2):
+                self.pred_modules.append(nn.Linear(hidden_feat,hidden_feat,bias=use_bias))
+                self.pred_modules.append(nn.LeakyReLU())
+            self.pred_modules.append(nn.Linear(hidden_feat,out_feat,bias=use_bias))
+        self.pred_modules.append(nn.Sigmoid())
+        self.predictor = nn.Sequential(*self.pred_modules)
     def forward(self, latent):
         return self.predictor(latent)
 
@@ -225,9 +222,9 @@ def pre_process_graphs(graph_list):
         processed_graphs.append(g)
     return processed_graphs
 
-def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,enc_epochs, 
-                   num_message_layers, num_pred_layers, hidden_width,latent_size):
-    print('GAE_KAN running...')
+def GAE_MLP_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,enc_epochs, 
+                   num_message_layers, num_readout_layers, num_pred_layers, num_dec_layers, hidden_width,latent_size):
+    print('GAE_MLP running...')
     datafile = datafile
     recon_loss_fn = nn.L1Loss()
     pred_loss_fn = nn.BCELoss()
@@ -236,9 +233,10 @@ def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
     lr = learning_rate
     epochs = pred_epochs
     encoding_epochs = enc_epochs
-    num_harmonics = num_harmonics
     num_enc_layers = num_message_layers
+    num_readout_layers = num_readout_layers
     num_pred_layers = num_pred_layers
+    num_dec_layers = num_dec_layers
 
     target_map = {'tox21':12,'muv':17,'sider':27,'clintox':2,'bace':1,'bbbp':1,'hiv':1}
     file_name = datafile.split("_")[0]
@@ -309,11 +307,13 @@ def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
         print(i)
         set_seed(i)
         #print('Iteration -', i + 1)
-        ae_model = KA_GAE(in_feat=23+10, hidden_feat=hidden_width, latent_feat=latent_size, out_feat=10 + 23 + 10,
-                                  num_harmonics=num_harmonics, e_num_layers=num_enc_layers,
+        ae_model = MLP_GAE(in_feat=23+10, hidden_feat=hidden_width, latent_feat=latent_size, out_feat=10 + 23 + 10,
+                                  e_num_layers=num_enc_layers,
+                                  r_num_layers= num_readout_layers,
+                                  d_num_layers= num_dec_layers,
                                   use_bias=True).to(device)
-        latent_model = KA_latentpred(latent_feat=latent_size, hidden_feat=hidden_width, out_feat=target_dim,
-                                     num_harmonics=num_harmonics,p_num_layers=num_pred_layers, use_bias=True).to(device)
+        latent_model = MLP_latentpred(latent_feat=latent_size, hidden_feat=hidden_width, out_feat=target_dim,
+                                     p_num_layers=num_pred_layers, use_bias=True).to(device)
         
         pred_model = LatentPass(ae_model.encoder, latent_model).to(device)
 
@@ -337,9 +337,3 @@ def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
     return All_AUC
 
 
-'''        if i == iters - 1:
-            for data, name in [(AUC_list, 'AUC'), (loss_list, 'Loss'), (vali_loss_list, 'ValidLoss')]:
-                plt.plot(data)
-                plt.title(f'{name} vs Epoch')
-                plt.savefig(f'{name}plot_GAE_KAN.png')
-                plt.show()'''
