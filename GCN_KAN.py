@@ -206,6 +206,8 @@ def GCN_KAN_Script(batch_size, datafile, iterations, learning_rate, num_epochs,n
 
     All_AUC = []
     for i in range(iters):
+        best_auc = 0
+        epoch_since_best = 0
         set_seed(i)
         #print('Iteration - ', i+1)
         AUC_list = []
@@ -219,8 +221,12 @@ def GCN_KAN_Script(batch_size, datafile, iterations, learning_rate, num_epochs,n
         for epoch in range(epochs):
             train_loss,vali_loss = train(model, device, train_loader, valid_loader, optimiser,loss_fn=loss_fn)
             AUC = predicting(model, device, valid_loader)
-            AUC_list.append(AUC)
-        All_AUC.append(max(AUC))
+            if AUC>best_auc:
+                best_auc = AUC
+                epoch_since_best = 0
+            elif epoch_since_best >=100:
+                break
+        All_AUC.append(best_auc)
     return All_AUC
 
 

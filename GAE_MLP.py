@@ -89,7 +89,7 @@ class MLP_GAE(nn.Module):
             for _ in range(d_num_layers-2):
                 self.decoder.append(nn.Linear(hidden_feat,hidden_feat,bias=use_bias))
                 self.decoder.append(nn.LeakyReLU())
-            self.decoder.append(nn.Linear(hidden_feat,hidden_feat,bias=use_bias))
+            self.decoder.append(nn.Linear(hidden_feat,out_feat,bias=use_bias))
         self.decoder =  nn.Sequential(*self.decoder)
     def forward(self, g, features):
         z = self.encoder(g, features)
@@ -222,6 +222,7 @@ def pre_process_graphs(graph_list):
         processed_graphs.append(g)
     return processed_graphs
 
+
 def GAE_MLP_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,enc_epochs, 
                    num_message_layers, num_readout_layers, num_pred_layers, num_dec_layers, hidden_width,latent_size):
     print('GAE_MLP running...')
@@ -304,7 +305,8 @@ def GAE_MLP_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
 
     All_AUC = []
     for i in range(iters):
-        print(i)
+        best_auc = 0
+        epoch_since_best = 0
         set_seed(i)
         #print('Iteration -', i + 1)
         ae_model = MLP_GAE(in_feat=23+10, hidden_feat=hidden_width, latent_feat=latent_size, out_feat=10 + 23 + 10,
@@ -327,13 +329,18 @@ def GAE_MLP_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
         for epoch in range(encoding_epochs):
             train_loss, vali_loss = train(ae_model, device, train_loader, valid_loader,
                                           ae_optimiser, recon_loss_fn, encoding=True)
-        AUC_list = []
         for epoch in range(epochs):
             train_loss, vali_loss = train(pred_model, device, train_loader, valid_loader,
                                           pred_optimiser, pred_loss_fn, encoding=False)
+            # Made early stopping - 100 epochs no auc gain
+            epoch_since_best+=1
             AUC = predicting(pred_model, device, valid_loader)
-            AUC_list.append(AUC)
-        All_AUC.append(max(AUC_list))
+            if AUC>best_auc:
+                best_auc = AUC
+                epoch_since_best = 0
+            elif epoch_since_best >=100:
+                break
+        All_AUC.append(best_auc)
     return All_AUC
 
 

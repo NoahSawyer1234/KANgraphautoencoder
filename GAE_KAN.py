@@ -332,7 +332,8 @@ def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
 
     All_AUC = []
     for i in range(iters):
-        print(i)
+        best_auc = 0
+        epoch_since_best = 0
         set_seed(i)
         #print('Iteration -', i + 1)
         ae_model = KA_GAE(in_feat=23+10, hidden_feat=hidden_width, latent_feat=latent_size, out_feat=10 + 23 + 10,
@@ -358,9 +359,14 @@ def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
         for epoch in range(epochs):
             train_loss, vali_loss = train(pred_model, device, train_loader, valid_loader,
                                           pred_optimiser, pred_loss_fn, encoding=False)
+            epoch_since_best+=1
             AUC = predicting(pred_model, device, valid_loader)
-            AUC_list.append(AUC)
-        All_AUC.append(max(AUC_list))
+            if AUC>best_auc:
+                best_auc = AUC
+                epoch_since_best = 0
+            elif epoch_since_best >=100:
+                break
+        All_AUC.append(best_auc)
     return All_AUC
 
 

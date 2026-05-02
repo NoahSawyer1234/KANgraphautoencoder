@@ -25,12 +25,12 @@ if __name__ == '__main__':
     harmonics = 1
     learn_rate = 0.0001
     epochs = 500
-    hidden_width = 16
+    hidden_width = 32
     latent_size = 128
     message_layers = 2
-    readout_layers = 1
-    decoder_layers = 1
-    pred_layers = 1
+    readout_layers = 2
+    decoder_layers = 2
+    pred_layers = 2
     iterations = 1
     model = 'GAE_MLP'
     dataset = 'bace'
