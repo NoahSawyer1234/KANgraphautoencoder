@@ -15,6 +15,9 @@ from torch_geometric.utils import add_self_loops, degree
 from torch_geometric.utils import scatter
 from torch_geometric.utils import get_laplacian, to_dense_adj
 from torch.utils.data import Dataset
+from torch_geometric.data.data import DataEdgeAttr  
+
+torch.serialization.add_safe_globals([DataEdgeAttr])
 
 class KAN_node_embedding(nn.Module):
     def __init__(self, input_size, output_size, num_harmonics, addbias=True):
@@ -270,7 +273,7 @@ def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
     file_name = datafile.split("_")[0]
     target_dim = target_map[file_name]
 
-    state = torch.load(datafile+'.pth')
+    state = torch.load(datafile+'.pth',weights_only=False)
 
     #Do node embedding first
     train_graphs = pre_process_graphs(state['train'])
@@ -361,10 +364,11 @@ def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
                                           pred_optimiser, pred_loss_fn, encoding=False)
             epoch_since_best+=1
             AUC = predicting(pred_model, device, valid_loader)
+            AUC_list.append(AUC)
             if AUC>best_auc:
                 best_auc = AUC
                 epoch_since_best = 0
-            elif epoch_since_best >=100:
+            elif epoch_since_best>100:
                 break
         All_AUC.append(best_auc)
     return All_AUC

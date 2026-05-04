@@ -1,13 +1,8 @@
-#####   Importing  ######
-#   - PyTorch for network architecture
-#   - DGL for graph network data structuring
-#   - Jarvis for chemical attribute production
 import torch
 import numpy as np
 from rdkit import Chem
 from rdkit.Chem import AllChem
 from rdkit.Chem.Scaffolds import MurckoScaffold
-from collections import defaultdict
 from torch.utils.data import Dataset
 import os
 import pandas as pd
@@ -173,6 +168,40 @@ def path_complex_mol(Smile):
 
 
 ##### DATASET PROCESSING CLASSES
+
+#Adapted from https://github.com/LongLee220/KA-GNN/blob/main/KA-GNN/utils/splitters.py
+class RandomSplitter(object):
+    def __init__(self):
+        super(RandomSplitter, self).__init__()
+
+    def split(self, 
+            dataset, 
+            frac_train=None, 
+            frac_valid=None, 
+            frac_test=None,
+            seed=None):
+        """
+        Args:
+            dataset(InMemoryDataset): the dataset to split.
+            frac_train(float): the fraction of data to be used for the train split.
+            frac_valid(float): the fraction of data to be used for the valid split.
+            frac_test(float): the fraction of data to be used for the test split.
+            seed(int|None): the random seed.
+        """
+        np.testing.assert_almost_equal(frac_train + frac_valid + frac_test, 1.0)
+        N = len(dataset)
+
+        indices = list(range(N))
+        rng = np.random.RandomState(seed)
+        rng.shuffle(indices)
+        train_cutoff = int(frac_train * N)
+        valid_cutoff = int((frac_train + frac_valid) * N)
+
+        train_dataset = dataset[indices[:train_cutoff]]
+        valid_dataset = dataset[indices[train_cutoff:valid_cutoff]]
+        test_dataset = dataset[indices[valid_cutoff:]]
+        return train_dataset, valid_dataset, test_dataset
+
 class ScaffoldSplitter(object):
     def __init__(self):
         super(ScaffoldSplitter, self).__init__()
@@ -243,7 +272,6 @@ def generate_scaffold(smiles, include_chirality=False):
 
 def get_label():
     """Get that default sider task names and return the side results for the drug"""
-    
     return ['label']
 #tox21,12     
 def get_tox():
@@ -290,7 +318,14 @@ def is_file_in_directory(directory, target_file):
     file_path = os.path.join(directory, target_file)
     return os.path.isfile(file_path)
 
-def creat_data(datafile,batch_size,train_ratio,vali_ratio,test_ratio):
+def set_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    np.random.seed(seed)
+
+def creat_data(datafile,batch_size,train_ratio,vali_ratio,test_ratio, seed):
     datasets = datafile
     directory_path = ''
     target_file_name = datafile +f'_{batch_size}.pth'
@@ -324,7 +359,8 @@ def creat_data(datafile,batch_size,train_ratio,vali_ratio,test_ratio):
                 graph_list.y = label
                 data_list.append([smiles, graph_list])
         #print('Graph list was done!')
-        splitter = ScaffoldSplitter().split(data_list, frac_train=train_ratio, frac_valid=vali_ratio, frac_test=test_ratio)
+        splitter = ScaffoldSplitter().split(data_list, frac_train=train_ratio, frac_valid=vali_ratio, 
+                                          frac_test=test_ratio)
         #print('splitter was done!')
   
         train_graph_list = []
@@ -347,12 +383,6 @@ def creat_data(datafile,batch_size,train_ratio,vali_ratio,test_ratio):
             'shuffle': True,
         }, datafile + f'_{batch_size}.pth')
 
-def set_seed(seed):
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-    np.random.seed(seed)
 
 #################################### DATA PROCESSING 
 def graph_processing(data,batch,train,test,valid):
@@ -365,7 +395,6 @@ def graph_processing(data,batch,train,test,valid):
         #print('The code uses CPU!!!')
 
     seed = 23
-    set_seed(seed)
 
     batch_size = batch
     train_ratio = train
@@ -374,7 +403,7 @@ def graph_processing(data,batch,train,test,valid):
     target_map = {'tox21':12,'muv':17,'sider':27,'clintox':2,'bace':1,'bbbp':1,'hiv':1}
     data_vec = ['bace','bbbp','hiv','clintox','sider','muv','tox21']
 
-    creat_data(data, batch_size, train_ratio, vali_ratio, test_ratio)
+    creat_data(data, batch_size, train_ratio, vali_ratio, test_ratio, seed)
 '''
 for dataset in data_vec:
     print('Now create dataset for ',dataset)

@@ -325,22 +325,33 @@ def GAE_MLP_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
 
         ae_optimiser   = torch.optim.Adam(ae_model.parameters(), lr=lr)
         pred_optimiser = torch.optim.Adam(latent_model.parameters(), lr=lr)
-
+        AUC_list = []
+        print('Encoder training')
         for epoch in range(encoding_epochs):
             train_loss, vali_loss = train(ae_model, device, train_loader, valid_loader,
                                           ae_optimiser, recon_loss_fn, encoding=True)
+        print('Prediction training')
         for epoch in range(epochs):
             train_loss, vali_loss = train(pred_model, device, train_loader, valid_loader,
                                           pred_optimiser, pred_loss_fn, encoding=False)
             # Made early stopping - 100 epochs no auc gain
+            #Currently modified for testing
             epoch_since_best+=1
             AUC = predicting(pred_model, device, valid_loader)
-            if AUC>best_auc:
+            AUC_list.append(AUC)
+            '''            if AUC>best_auc:
                 best_auc = AUC
                 epoch_since_best = 0
-            elif epoch_since_best >=100:
-                break
-        All_AUC.append(best_auc)
+            elif AUC <= AUC_list[-100]:
+                break'''
+        #All_AUC.append(best_auc)
+        All_AUC.append(max(AUC_list))
+    if i == iters - 1:
+        for data, name in [(AUC_list, 'AUC')]:
+            plt.plot(data)
+            plt.title(f'{name} vs Epoch')
+            plt.savefig(f'{name}plot_GAE_MLP.png')
+            plt.show()
     return All_AUC
 
 
