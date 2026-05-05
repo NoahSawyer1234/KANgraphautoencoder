@@ -84,15 +84,15 @@ if __name__ == '__main__':
     auc_list = []
     #base_state:
     batches = 128
-    harmonics = 3
+    harmonics = 1
     learn_rate = 0.0001
     epochs = 500
     hidden_width = 64
     latent_size = 128
-    message_layers = 4
-    readout_layers = 2
-    decoder_layers = 2
-    pred_layers = 3
+    message_layers = 3
+    readout_layers = 1
+    decoder_layers = 1
+    pred_layers = 2
     iterations = 100
     model = 'GAE_MLP'
     dataset = 'bace'
