@@ -256,7 +256,11 @@ def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
                    num_message_layers, num_readout_layers, num_pred_layers, num_dec_layers, hidden_width,latent_size):
     print('GAE_KAN running...')
     datafile = datafile
-    recon_loss_fn = nn.L1Loss()
+    k=10
+    recon_loss_fn = lambda pred, target: (
+    nn.L1Loss()(pred[:, :k], target[:, :k]) +
+    nn.L1Loss()(pred[:, k:], target[:, k:])
+        ) / 2
     pred_loss_fn = nn.BCELoss()
     batch_size = batch_size
     iters = iterations

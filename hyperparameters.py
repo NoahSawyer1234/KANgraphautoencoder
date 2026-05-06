@@ -2,6 +2,7 @@ import GAE_KAN
 import graph_processing
 import numpy as np
 import json
+import optimised_GAEKAN
 
 import torch
 import torch.nn as nn
@@ -21,27 +22,6 @@ from torch_geometric.data.data import DataEdgeAttr
 torch.serialization.add_safe_globals([DataEdgeAttr])
 
 '''
-For biggest GAE_KAN model,
-3*4*3*4*3*5*4*4*3*4*3 = 1,244,160 models to test :(
- If I fix:
-    batches = 128
-    learn_rate = 0.0001
-    epochs = 2000 + early stopping criteria
-    encoding epochs = ^^
-Then it becomes 4*3*5*4*4*5*3 = 14400 models :)
-
-Further, if I reduce:
-    num_harmonics = [1,2,3]
-    message_layers = [1,2,3,4]
-    readout_layers = [1,2,3]
-    latent_size = [128,256,512]
-    pred_layers = [1,2,3,4]
-Then I get 3*3*4*3*3*4*3 = 3888 models :)) 
-
-And the smallest GCN_MLP model will only have 3*4*3*3*4*3 = 1296 versions
-
-Dataset Specific parameters:
-batches
 
 # Least to most important 
 For GAE-KAN:
@@ -83,7 +63,11 @@ if __name__ == '__main__':
 
     auc_list = []
     #base_state:
+
+    #Tested and chosen
     batches = 128
+
+    #Yet to choose
     harmonics = 1
     learn_rate = 0.0001
     epochs = 500
@@ -93,17 +77,17 @@ if __name__ == '__main__':
     readout_layers = 1
     decoder_layers = 1
     pred_layers = 2
-    iterations = 100
+    iterations = 500
     model = 'GAE_MLP'
     dataset = 'bace'
     results = {}
-    for b in [64,128,256]:
-        graph_processing.graph_processing(dataset,b,0.8,0,0.2)
-        max_auc_list = GAE_KAN.GAE_KAN_Script(b,dataset + f'_{b}',100,learn_rate,epochs,epochs, harmonics,
-                                 message_layers,readout_layers,pred_layers,decoder_layers,hidden_width,latent_size)
-        results[f'{b}'] = max_auc_list
-        results[f'{b}_mean'] = np.mean(max_auc_list)
-    with open('batches_tuning.json', 'w') as f:
+    for d in [1,2,3]:
+        graph_processing.graph_processing(dataset,batches,0.8,0,0.2)
+        max_auc_list = optimised_GAEKAN.GAE_KAN_Script(batches,dataset + f'_{batches}',100,learn_rate,epochs,epochs, harmonics,
+                                 message_layers,readout_layers,pred_layers,d,hidden_width,latent_size,eval_every=5,patience=20)
+        results[f'{d}'] = max_auc_list
+        results[f'{d}_mean'] = np.mean(max_auc_list)
+    with open('dec_layers_tuning.json', 'w') as f:
         json.dump(results, f, indent=4)
 
 
