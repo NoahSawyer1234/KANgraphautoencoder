@@ -32,8 +32,8 @@ from torch_geometric.utils import get_laplacian, to_dense_adj
 from torch.utils.data import Dataset
 from torch_geometric.data.data import DataEdgeAttr
 from concurrent.futures import ThreadPoolExecutor
+import matplotlib.pyplot as plt
  
-torch.serialization.add_safe_globals([DataEdgeAttr])
  
 class PreprocessedData(Data):
     def __inc__(self, key, value, *args, **kwargs):
@@ -147,23 +147,6 @@ class KA_GAE(nn.Module):
         z   = self.encoder(g, features)
         out = self.decoder(z)
         return out
- 
- 
-class KA_latentpred(nn.Module):
-    def __init__(self, latent_feat, hidden_feat, out_feat, num_harmonics, p_num_layers, use_bias=True):
-        super().__init__()
-        if p_num_layers == 1:
-            layers = [KAN_node_embedding(latent_feat, out_feat, num_harmonics, addbias=use_bias)]
-        else:
-            layers = [KAN_node_embedding(latent_feat, hidden_feat, num_harmonics, addbias=use_bias)]
-            for _ in range(p_num_layers - 2):
-                layers.append(KAN_node_embedding(hidden_feat, hidden_feat, num_harmonics, addbias=use_bias))
-            layers.append(KAN_node_embedding(hidden_feat, out_feat, num_harmonics, addbias=use_bias))
-        layers.append(nn.Sigmoid())
-        self.predictor = nn.Sequential(*layers)
- 
-    def forward(self, latent):
-        return self.predictor(latent)
  
  
 class LatentPass(nn.Module):
@@ -291,24 +274,33 @@ class GraphFeatureDataset(Dataset):
         return self.graphs[index], self.target[index], self.labels[index]
 
 
-def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
-                   enc_epochs, num_harmonics, num_message_layers, num_readout_layers,
-                   num_pred_layers, num_dec_layers, hidden_width, latent_size,
-                   eval_every=5, patience=20):
+def GAE_KAN_Script(datafile, iterations, learning_rate, enc_epochs, num_harmonics, 
+                   num_message_layers, num_readout_layers, num_dec_layers, hidden_width, latent_size,
+                   eval_every=5, patience=50, prediction_model = None, pred_epochs=0):
 
-    print('GAE_KAN_CPU running...')
+    if torch.cuda.is_available():
+        device = torch.device('cuda')
+        print(f'GAE_KAN running on GPU: {torch.cuda.get_device_name(0)}')
+        # Worker count: rule-of-thumb for GPU clusters is 4 per GPU.
+        n_workers = min(4, os.cpu_count() or 1)
+        pin_mem   = True
+    else:
+        device = torch.device('cpu')
+        print('GAE_KAN running on CPU')
+        # Use all available cores for CPU-only runs.
+        torch.set_num_threads(os.cpu_count() or 1)
+        n_workers = min(8, os.cpu_count() or 1)
+        pin_mem   = False
  
-    torch.set_num_threads(os.cpu_count() or 1)
- 
-    n_workers = 0
-    persist   = False
-    device = torch.device('cpu')
+    persist = n_workers > 0
+    scaler = torch.cuda.amp.GradScaler() if device.type == 'cuda' else None
 
     k = 10
+    _l1 = nn.L1Loss()
     recon_loss_fn = lambda pred, target: (
-    nn.L1Loss()(pred[:, :k], target[:, :k]) +
-    nn.L1Loss()(pred[:, k:], target[:, k:])
-        ) / 2
+        _l1(pred[:, :k], target[:, :k]) +
+        _l1(pred[:, k:], target[:, k:])
+    ) / 2
     pred_loss_fn  = nn.BCELoss()
  
     target_map = {'tox21': 12, 'muv': 17, 'sider': 27,
@@ -318,7 +310,6 @@ def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
  
     state = torch.load(datafile + '.pth', weights_only=False)
  
-    # ---- preprocessing (runs once, not per-iteration) ----
     train_graphs = pre_process_graphs(state['train'])
     valid_graphs = pre_process_graphs(state['valid'])
  
@@ -336,12 +327,12 @@ def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
     train_loader = DataLoader(
         GraphFeatureDataset(train_gs, train_evs, train_node_feat, train_labels),
         batch_size=loader_bs, shuffle=state['shuffle'], drop_last=True,
-        num_workers=n_workers, persistent_workers=persist,
+        num_workers=n_workers, persistent_workers=persist, pin_memory=pin_mem
     )
     valid_loader = DataLoader(
         GraphFeatureDataset(valid_gs, valid_evs, valid_node_feat, valid_labels),
         batch_size=loader_bs, shuffle=False, drop_last=True,
-        num_workers=n_workers, persistent_workers=persist,
+        num_workers=n_workers, persistent_workers=persist,  pin_memory=pin_mem
     )
  
     node_dim  = train_graphs[0].x.shape[1]          # inferred, not hardcoded
@@ -360,43 +351,40 @@ def GAE_KAN_Script(batch_size, datafile, iterations, learning_rate, pred_epochs,
         set_seed(i)
  
         ae_model = KA_GAE(
-            in_feat=node_dim, hidden_feat=hidden_width, latent_feat=latent_size,
-            out_feat=out_feat, num_harmonics=num_harmonics,
-            e_num_layers=num_message_layers, r_num_layers=num_readout_layers,
-            d_num_layers=num_dec_layers, use_bias=True,
-        ).to(device)
- 
-        latent_model = KA_latentpred(
-            latent_feat=latent_size, hidden_feat=hidden_width, out_feat=target_dim,
-            num_harmonics=num_harmonics, p_num_layers=num_pred_layers, use_bias=True,
-        ).to(device)
- 
-        pred_model = LatentPass(ae_model.encoder, latent_model).to(device)
- 
+                in_feat=node_dim, hidden_feat=hidden_width, latent_feat=latent_size,
+                out_feat=out_feat, num_harmonics=num_harmonics,
+                e_num_layers=num_message_layers, r_num_layers=num_readout_layers,
+                d_num_layers=num_dec_layers, use_bias=True,
+            ).to(device)
+    
         ae_optimiser   = torch.optim.Adam(ae_model.parameters(),    lr=learning_rate)
-        pred_optimiser = torch.optim.Adam(latent_model.parameters(), lr=learning_rate)
- 
-        # ---- encoder pre-training ----
+        #loss_vec,valid_vec=[],[]
         for _ in range(enc_epochs):
-            train(ae_model, device, train_loader, valid_loader,
+            loss,valid,a = train(ae_model, device, train_loader, valid_loader,
                   ae_optimiser, recon_loss_fn, encoding=True, return_auc=False)
+            #loss_vec.append(loss)
+            #valid_vec.append(valid)
+        
  
-        # ---- predictor training with merged AUC evaluation ----
-        AUC_list = []
-        for epoch in range(pred_epochs):
-            do_auc = (epoch % eval_every == 0) or (epoch == pred_epochs - 1)
-            _, _, auc = train(pred_model, device, train_loader, valid_loader,
-                              pred_optimiser, pred_loss_fn,
-                              encoding=False, return_auc=do_auc)
-            epoch_since_best += 1
-            if auc is not None:
-                AUC_list.append(auc)
-                if auc > best_auc:
-                    best_auc        = auc
-                    epoch_since_best = 0
-            if epoch_since_best > patience:
-                break
- 
-        All_AUC.append(best_auc)
- 
+        #Prediction must be toggled on
+        if prediction_model is not None:
+            latent_model = prediction_model
+            pred_model = LatentPass(ae_model.encoder, latent_model).to(device)
+            pred_optimiser = torch.optim.Adam(latent_model.parameters(), lr=learning_rate) 
+            AUC_list = []
+            for epoch in range(pred_epochs):
+                do_auc = (epoch % eval_every == 0) or (epoch == pred_epochs - 1)
+                _, _, auc = train(pred_model, device, train_loader, valid_loader,
+                                pred_optimiser, pred_loss_fn,
+                                encoding=False, return_auc=do_auc)
+                epoch_since_best += 1
+                if auc is not None:
+                    AUC_list.append(auc)
+                    if auc > best_auc:
+                        best_auc        = auc
+                        epoch_since_best = 0
+                if epoch_since_best > patience:
+                    break
+    
+            All_AUC.append(best_auc)
     return All_AUC

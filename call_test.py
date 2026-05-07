@@ -12,10 +12,7 @@ from torch_geometric.utils import scatter
 from torch_geometric.utils import get_laplacian, to_dense_adj
 from torch.utils.data import Dataset
 
-import GAE_KAN
-import GAE_MLP
-import GCN_KAN
-import GCN_MLP
+import optimised_GAEKAN
 import graph_processing
 import numpy as np
 import json
@@ -24,14 +21,14 @@ if __name__ == '__main__':
     batches = 128
     harmonics = 1
     learn_rate = 0.0001
-    epochs = 500
-    hidden_width = 64
-    latent_size = 128
+    epochs = 200
+    hidden_width = 16
+    latent_size = 64
     message_layers = 1
     readout_layers = 1
     decoder_layers = 1
-    pred_layers = 1
-    iterations = 1
+    #pred_layers = 1
+    #iterations = 1
     model = 'GAE_MLP'
     dataset = 'bace'
     '''
@@ -57,12 +54,13 @@ if __name__ == '__main__':
     print('Run starting...')
 
     graph_processing.graph_processing(dataset,batches,0.8,0,0.2)
-    res = GAE_KAN.GAE_KAN_Script(batches,dataset + f'_{batches}',iterations,learn_rate,epochs,epochs, harmonics,
-                                 message_layers,readout_layers,pred_layers,decoder_layers,hidden_width,latent_size)
+    optimised_GAEKAN.GAE_KAN_Script(f'{dataset}_{batches}',1,learn_rate,epochs,
+                                          harmonics,message_layers,readout_layers,decoder_layers,hidden_width,
+                                          latent_size)
     #res = GAE_KAN.GAE_KAN_Script(batches,dataset + f'_{batches}',iterations,learn_rate,epochs,epochs,harmonics, message_layers,readout_layers,pred_layers,decoder_layers,hidden_width,latent_size)
-    print(res)
-    print(np.mean(res))
+    #print(res)
+    #print(np.mean(res))
 
-    with open('test.json', 'w') as f:
-        json.dump(res, f, indent=4)
+'''    with open('test.json', 'w') as f:
+        json.dump(res, f, indent=4)'''
     

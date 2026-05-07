@@ -17,7 +17,6 @@ from torch_geometric.utils import get_laplacian, to_dense_adj
 from torch.utils.data import Dataset
 from torch_geometric.data.data import DataEdgeAttr  
 
-torch.serialization.add_safe_globals([DataEdgeAttr])
 
 class KAN_node_embedding(nn.Module):
     def __init__(self, input_size, output_size, num_harmonics, addbias=True):

@@ -19,54 +19,30 @@ from torch_geometric.utils import scatter
 import json
 from torch_geometric.data.data import DataEdgeAttr  
 
-torch.serialization.add_safe_globals([DataEdgeAttr])
-
-'''
-
-# Least to most important 
-For GAE-KAN:
-
-dec_layer 
-batches
-enc_epochs
-epochs
-learn_rate
-readout
-message
-latent_size
-hidden_width
-num_harmonics
-pred_layers
-'''
-
+class KA_latentpred(nn.Module):
+    def __init__(self, latent_feat, hidden_feat, out_feat, num_harmonics, p_num_layers, use_bias=True):
+        super().__init__()
+        if p_num_layers == 1:
+            layers = [optimised_GAEKAN.KAN_node_embedding(latent_feat, out_feat, num_harmonics, addbias=use_bias)]
+        else:
+            layers = [optimised_GAEKAN.KAN_node_embedding(latent_feat, hidden_feat, num_harmonics, addbias=use_bias)]
+            for _ in range(p_num_layers - 2):
+                layers.append(optimised_GAEKAN.KAN_node_embedding(hidden_feat, hidden_feat, num_harmonics, addbias=use_bias))
+            layers.append(optimised_GAEKAN.KAN_node_embedding(hidden_feat, out_feat, num_harmonics, addbias=use_bias))
+        layers.append(nn.Sigmoid())
+        self.predictor = nn.Sequential(*layers)
+ 
+    def forward(self, latent):
+        return self.predictor(latent)
 
 if __name__ == '__main__':
-    batches = [64,128,256]
-    harmonics = [1,2,3,4,5]
-    learn_rate = [10**-3,10**-4,10**-5]
-    epochs = [250,500,1000,2000]
-    hidden_width = [32,64,128,256]
-    message_layers = [1,2,3,4,5]
-    readout_layers = [1,2,3]
-    iterations = 50
-
-    #AE features
-    latent_size = [64,128,256,512,1024]
-    pred_layers = [1,2,3,4]
-    enc_epochs = [500,1000,2000]
-    dec_layers = [1,2,3]
-
     model = 'GAE_KAN'
     dataset = 'bace'
     train, test, valid = 0.8,0,0.2  
-    architecture = model.split('_')[0]
-
     auc_list = []
     #base_state:
-
     #Tested and chosen
     batches = 128
-
     #Yet to choose
     harmonics = 1
     learn_rate = 0.0001
@@ -76,15 +52,19 @@ if __name__ == '__main__':
     message_layers = 3
     readout_layers = 1
     decoder_layers = 1
-    pred_layers = 2
-    iterations = 500
+
+    #For prediction layer
+    pred_module = KA_latentpred(latent_size,64,1,1,2,True)
+
+    iters = 50
     model = 'GAE_MLP'
     dataset = 'bace'
     results = {}
     for d in [1,2,3]:
         graph_processing.graph_processing(dataset,batches,0.8,0,0.2)
-        max_auc_list = optimised_GAEKAN.GAE_KAN_Script(batches,dataset + f'_{batches}',100,learn_rate,epochs,epochs, harmonics,
-                                 message_layers,readout_layers,pred_layers,d,hidden_width,latent_size,eval_every=5,patience=20)
+        max_auc_list = optimised_GAEKAN.GAE_KAN_Script(f'{dataset}_{batches}',iters, learn_rate,epochs,harmonics,message_layers,
+                                                       readout_layers,d,hidden_width,latent_size,
+                                                       eval_every=5,patience=30,prediction_model=pred_module,pred_epochs=500)
         results[f'{d}'] = max_auc_list
         results[f'{d}_mean'] = np.mean(max_auc_list)
     with open('dec_layers_tuning.json', 'w') as f:
