@@ -45,7 +45,7 @@ if __name__ == '__main__':
 
     #Base State
     batches=128
-    decoder_layers = [1]
+    decoder_layers = [2]
     dec_epochs = [500]
     learn_rate = [10**-4]
     latent_size = [128]
