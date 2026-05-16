@@ -14,6 +14,7 @@ from torch_geometric.utils import get_laplacian, to_dense_adj
 from torch.utils.data import Dataset
 from concurrent.futures import ThreadPoolExecutor
 import random
+import torch.nn.functional as F
  
 class PreprocessedData(Data):
     def __inc__(self, key, value, *args, **kwargs):
@@ -114,18 +115,50 @@ class LatentPass(nn.Module):
     def forward(self, g, x):
         z = self.encoder(g, x)
         return self.predictor(z)
+    
+def batch_tanimoto(fps):
+    dot   = fps @ fps.T                              # [B, B]
+    norms = fps.sum(dim=1, keepdim=True)             # [B, 1]  (number of set bits)
+    denom = norms + norms.T - dot                    # [B, B]
+    denom = denom.clamp(min=1e-8)                    # avoid division by zero
+    return dot / denom                               # [B, B]
+ 
+ 
+def contrastive_loss(z, tanimoto_sim, margin=1.0):
+    diff = z.unsqueeze(0) - z.unsqueeze(1)               # [B, B, latent_dim]
+    dist = diff.pow(2).sum(dim=2).clamp(min=1e-8).sqrt() # [B, B]
+ 
+    similar_loss    = tanimoto_sim * dist.pow(2)
+    dissimilar_loss = (1 - tanimoto_sim) * F.relu(margin - dist).pow(2)
+
+    mask = 1 - torch.eye(z.size(0), device=z.device)
+    loss = (similar_loss + dissimilar_loss) * mask
+    return loss.sum() / mask.sum()
  
 def train(model, device, train_loader, valid_loader, optimizer, loss_fn,
-          encoding=True, return_auc=False):
+          encoding=True, return_auc=False, contrastive_weight=0.1, margin=1.0):
     model.train()
     total_train_loss = 0.0
-    for graphs, node_eigvals_target, labels in train_loader:
+    for graphs, node_eigvals_target, labels, fps in train_loader:
         optimizer.zero_grad(set_to_none=True)          # faster than zeroing
         graphs = graphs.to(device)
         node_eigvals_target = node_eigvals_target.to(device)
         y = labels.to(device).float()
-        out = model(graphs, graphs.x)
-        loss = loss_fn(out, node_eigvals_target) if encoding else loss_fn(out, y)
+        fps = fps.to(device)
+        if encoding:
+            z   = model.encoder(graphs, graphs.x)
+            out = model.decoder(z)
+            recon = loss_fn(out, node_eigvals_target)
+            if contrastive_weight > 0.0:
+                tanimoto = batch_tanimoto(fps)
+                contrast = contrastive_loss(z, tanimoto, margin)
+                loss = recon + contrastive_weight * contrast
+            else:
+                loss = recon
+        else:
+            out  = model(graphs, graphs.x)
+            loss = loss_fn(out, y)
+ 
         loss.backward()
         optimizer.step()
         total_train_loss += loss.item()
@@ -135,7 +168,7 @@ def train(model, device, train_loader, valid_loader, optimizer, loss_fn,
     all_preds  = [] if return_auc else None
     all_labels = [] if return_auc else None
     with torch.no_grad():
-        for graphs, node_eigvals_target, labels in valid_loader:
+        for graphs, node_eigvals_target, labels, fps in valid_loader:
             graphs = graphs.to(device)
             node_eigvals_target = node_eigvals_target.to(device)
             y = labels.to(device).float()
@@ -149,8 +182,8 @@ def train(model, device, train_loader, valid_loader, optimizer, loss_fn,
     auc = None
     if return_auc:
         preds  = torch.cat(all_preds).numpy()
-        labels = torch.cat(all_labels).numpy()
-        auc = roc_auc_score(labels, preds)
+        labeling = torch.cat(all_labels).numpy()
+        auc = roc_auc_score(labeling, preds)
  
     return total_train_loss, total_loss_val, auc
  
@@ -190,6 +223,7 @@ def pre_process_graphs(graph_list):
         d_inv_sq = deg.pow(-0.5)
         d_inv_sq[d_inv_sq == float('inf')] = 0
         norm = d_inv_sq[row] * d_inv_sq[col]
+        fp = getattr(g, 'fp', torch.zeros(1024, dtype=torch.float32))
         pd = PreprocessedData(
             x  = g.x,
             edge_index = g.edge_index,
@@ -198,6 +232,7 @@ def pre_process_graphs(graph_list):
             num_nodes = g.num_nodes,
             edge_index_sl = edge_index_sl,
             norm = norm,
+            fp = fp
         )
         processed.append(pd)
     return processed
@@ -208,7 +243,7 @@ class GraphFeatureDataset(Dataset):
         self.graphs = graph_list
         self.target = [torch.cat([eigval_list[i], feat_list[i].view(-1)], dim=0) for i in range(len(eigval_list)) ]
         self.labels = label_list
- 
+        self.fps    = [g.fp for g in graph_list]
     def __len__(self):
         return len(self.labels)
  
@@ -227,7 +262,8 @@ def set_seed(seed):
 
 def GAE_MLP_Script(datafile, iterations, learning_rate, enc_epochs, 
                    num_message_layers, num_readout_layers, num_dec_layers, hidden_width, latent_size, topo_weight=0.5,
-                   eval_every=5, patience=50, prediction_model = None, pred_epochs=0, seed=0):
+                   eval_every=5, patience=50, prediction_model = None, pred_epochs=0, seed=0,
+                   contrastive_weight=0.1, margin=1.0):
     set_seed(seed)
     if torch.cuda.is_available():
         device = torch.device('cuda')
@@ -302,7 +338,8 @@ def GAE_MLP_Script(datafile, iterations, learning_rate, enc_epochs,
         #loss_vec,valid_vec=[],[]
         for _ in range(enc_epochs):
             loss,valid,a = train(ae_model, device, train_loader, valid_loader,
-                  ae_optimiser, recon_loss_fn, encoding=True, return_auc=False)
+                  ae_optimiser, recon_loss_fn, encoding=True, return_auc=False, 
+                  contrastive_weight=contrastive_weight,margin=margin)
             #loss_vec.append(loss)
             #valid_vec.append(valid)
         
@@ -316,8 +353,8 @@ def GAE_MLP_Script(datafile, iterations, learning_rate, enc_epochs,
             for epoch in range(pred_epochs):
                 do_auc = (epoch % eval_every == 0) or (epoch == pred_epochs - 1)
                 loss, valid, auc = train(pred_model, device, train_loader, valid_loader,
-                                pred_optimiser, pred_loss_fn,
-                                encoding=False, return_auc=do_auc)
+                                pred_optimiser, pred_loss_fn,encoding=False, return_auc=do_auc, 
+                                contrastive_weight=0)
                 epoch_since_best += 1
                 if auc is not None:
                     AUC_list.append(auc)

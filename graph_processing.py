@@ -109,6 +109,13 @@ def check_common_elements(list1, list2, element1, element2):
             return True  
     return False  
 
+def compute_morgan_fingerprint(smiles, radius=2, n_bits=1024):
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None:
+        return None
+    fp = AllChem.GetMorganFingerprintAsBitVect(mol, radius=radius, nBits=n_bits)
+    return torch.tensor(list(fp), dtype=torch.float32)
+
 def atom_to_graph(smiles):
     mol = Chem.MolFromSmiles(smiles)
     if mol is None:
@@ -357,6 +364,11 @@ def creat_data(datafile,batch_size,train_ratio,vali_ratio,test_ratio, seed):
             else:
                 label = torch.tensor(labels.iloc[i].to_numpy(), dtype=torch.float32)
                 graph_list.y = label
+                fp = compute_morgan_fingerprint(smiles, radius=2, n_bits=1024)
+                if fp is not None:
+                    graph_list.fp = fp
+                else:
+                    graph_list.fp = torch.zeros(1024, dtype=torch.float32)
                 data_list.append([smiles, graph_list])
         #print('Graph list was done!')
         splitter = ScaffoldSplitter().split(data_list, frac_train=train_ratio, frac_valid=vali_ratio, 
