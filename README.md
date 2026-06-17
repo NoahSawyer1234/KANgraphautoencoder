@@ -1,5 +1,7 @@
-# KANgraphautoencoder
-KAN-based graph autoencoder 
+# CKANGA - Contrastive Kolmogorov Arnold Network Graph Autoencoder
+
+<img width="1555" height="673" alt="CKANGA" src="https://github.com/user-attachments/assets/7fafc77b-b502-4cf4-a299-572727c6b779" />
+
 
 ## data
 Contains the raw and processed MoleculeNet datasets, with accompanying R cleaning script, 
